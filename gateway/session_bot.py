@@ -241,9 +241,9 @@ def displaceable_bot_chat(authority, row):
                             (POLICY_PREFIX + (chat_id or candidate['id']),
                              LEGACY_PREFIX + (chat_id or candidate['id']))).fetchone():
                 return None
-        if _kept_local_history(db, candidate):
-            return None
-    return row['id']
+    # Only the tip is adopted (``_target``), so only the tip decides: a root the owner could adopt
+    # above a tip nobody can would otherwise hold the title and refuse every delivery.
+    return None if _kept_local_history(db, tip) else row['id']
 
 
 def release_superseded_bot_chat(db, store, route, session_id):
