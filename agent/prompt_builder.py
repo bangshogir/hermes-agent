@@ -47,6 +47,30 @@ logger = logging.getLogger(__name__)
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 
 
+def _context_scan_disabled() -> bool:
+    """True when the ACTIVE PROFILE opted out of context-file scanning.
+
+    Reads the profile-scoped config: ``get_config_path()`` resolves through
+    ``get_hermes_home()``, which follows the per-turn ``set_hermes_home_override``
+    the gateway installs before dispatching to a routed profile. So
+    ``agent.scan_context_files: false`` in ONE profile's config.yaml disables
+    the scan for that profile only — every other profile keeps scanning.
+
+    Opt-in by explicit ``false`` only (``is False``, not falsy): a missing key,
+    a malformed value, or an unreadable config all leave scanning ON. The
+    failure direction is fail-closed on purpose — this guard exists to stop
+    prompt injection reaching the system prompt, so it must not disappear
+    because config reading broke.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        return (load_config_readonly().get("agent") or {}).get("scan_context_files") is False
+    except Exception as e:
+        logger.debug("Could not read scan_context_files flag, scanning stays on: %s", e)
+        return False
+
+
 def _scan_context_content(content: str, filename: str) -> str:
     """Scan context file content for injection. Returns sanitized content.
 
@@ -57,7 +81,17 @@ def _scan_context_content(content: str, filename: str) -> str:
     cloned repo (security research, infra docs).  Content matching is
     BLOCKED at this layer because the file would otherwise enter the
     system prompt verbatim and the user has no chance to intervene.
+
+    A profile can opt out with ``agent.scan_context_files: false`` — see
+    ``_context_scan_disabled``. That is a deliberate, profile-local weakening of
+    this guard, intended for a profile whose context files legitimately discuss
+    offensive-security tooling and trip the near-zero-false-positive C2 brand
+    patterns.
     """
+    if _context_scan_disabled():
+        logger.debug("Context-file scan disabled by config for %s", filename)
+        return content
+
     findings = _scan_for_threats(content, scope="context")
     if findings:
         logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))

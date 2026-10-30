@@ -1381,6 +1381,22 @@ def _build_child_agent(
 
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
+        # Resolve the armada profile from the SOUL.md path in context BEFORE the
+        # hook fires, so the hook payload carries a real profile instead of the
+        # generic child_role ('leaf'|'orchestrator'). Without this the MC fleet
+        # hook guesses the profile from goal keywords and mislabels agents
+        # (e.g. a Dev task mentioning "api" lit up Reach).
+        _prof_hint = "orchestrator"
+        try:
+            import re as _re0
+            _m0 = _re0.search(
+                r"(?:profiles?|profil)/([a-z]+)/soul",
+                " ".join([goal or "", context or ""]).lower(),
+            )
+            if _m0 and _m0.group(1) in {"scout", "scribe", "dev", "reach", "craft", "pixel"}:
+                _prof_hint = _m0.group(1)
+        except Exception:
+            pass
         _invoke_hook(
             "subagent_start",
             parent_session_id=getattr(parent_agent, "session_id", None),
@@ -1390,7 +1406,36 @@ def _build_child_agent(
             child_subagent_id=subagent_id,
             child_role=effective_role,
             child_goal=goal,
+            mc_profile=_prof_hint,
         )
+        # ponytail: marker file for Mission Control fleet LED — bypasses shell-hook
+        # registration issues in gateway context. Direct file write is
+        # non-blocking (no subprocess) so it works inside the async loop.
+        # Remove when subagent_start hook fires reliably in-process.
+        # Profile resolution: delegate_task tidak menerima nama profile (child
+        # pakai config parent). SOUL.md path di context adalah satu-satunya
+        # sinyal andal — orchestrator-routing skill WAJIB sertakan baris
+        # "Baca SOUL.md dulu: ~/.hermes/profiles/<agent>/SOUL.md".
+        try:
+            import json as _json, os as _os, re as _re
+            _ctx = " ".join([goal or "", context or ""]).lower()
+            _m = _re.search(r"(?:profiles?|profil)/([a-z]+)/soul", _ctx)
+            _ARMADA = {"scout", "scribe", "dev", "reach", "craft", "pixel", "pocong", "devil"}
+            _profile = _m.group(1) if _m and _m.group(1) in _ARMADA else ""
+            child._mc_profile = _profile   # dibaca subagent_stop untuk hapus marker
+            # No marker for the orchestrator: the fleet LED for it is driven by
+            # the gateway log poller, and a marker file here would linger as a
+            # stray /tmp/hermes_orchestrator_working after every delegation.
+            if _profile:
+                _marker = _os.path.join("/tmp", f"hermes_{_profile}_working")
+                with open(_marker, "w") as _f:
+                    _f.write(_json.dumps({
+                        "child_role": effective_role,
+                        "child_status": "running",
+                        "child_goal": goal,
+                    }))
+        except Exception:
+            logger.debug("mc-fleet marker touch failed", exc_info=True)
     except Exception:
         logger.debug("subagent_start hook invocation failed", exc_info=True)
 
@@ -2705,15 +2750,27 @@ def delegate_task(
                     _children_cost_total += float(child_cost)
             except (TypeError, ValueError):
                 pass
+            _child_index = entry.get("task_index", -1)
+            _child_agent = (
+                children[_child_index][2]
+                if isinstance(_child_index, int) and 0 <= _child_index < len(children)
+                else None
+            )
+            # Clear the Mission Control fleet marker set at spawn. MUST run even
+            # when _invoke_hook is None — otherwise a missing plugin makes the
+            # marker linger and MC's 120s TTL shows long delegations as IDLE.
+            try:
+                import os as _os2
+                _prof2 = getattr(_child_agent, "_mc_profile", None) if _child_agent else None
+                if _prof2 and _prof2 != "orchestrator":
+                    _mk = _os2.path.join("/tmp", f"hermes_{_prof2}_working")
+                    if _os2.path.exists(_mk):
+                        _os2.remove(_mk)
+            except Exception:
+                logger.debug("mc-fleet marker clear failed", exc_info=True)
             if _invoke_hook is None:
                 continue
             try:
-                _child_index = entry.get("task_index", -1)
-                _child_agent = (
-                    children[_child_index][2]
-                    if isinstance(_child_index, int) and 0 <= _child_index < len(children)
-                    else None
-                )
                 _invoke_hook(
                     "subagent_stop",
                     parent_session_id=_parent_session_id,
@@ -2723,6 +2780,7 @@ def delegate_task(
                     child_summary=entry.get("summary"),
                     child_status=entry.get("status"),
                     duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
+                    mc_profile=(getattr(_child_agent, "_mc_profile", None) or ""),
                 )
             except Exception:
                 logger.debug("subagent_stop hook invocation failed", exc_info=True)

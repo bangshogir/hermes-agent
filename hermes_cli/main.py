@@ -2404,6 +2404,14 @@ def cmd_gateway(args):
     """Gateway management commands."""
     _sync_bundled_skills_quietly()
 
+    # Register shell hooks so the running gateway process can fire them.
+    try:
+        from agent.shell_hooks import register_from_config
+        from hermes_cli.config import load_config
+        register_from_config(load_config(), accept_hooks=True)
+    except Exception:
+        logger.debug("shell-hook registration failed in gateway cmd", exc_info=True)
+
     from hermes_cli.gateway import gateway_command
 
     gateway_command(args)

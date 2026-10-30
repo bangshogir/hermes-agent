@@ -4721,6 +4721,28 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
 
+    # Register shell hooks (subagent_start/stop for Mission Control fleet LEDs,
+    # etc.). The CLI entry point registers these at main() startup, but the
+    # gateway service calls run_gateway() directly — without this the running
+    # gateway process has zero shell-hook callbacks loaded.
+    try:
+        from agent.shell_hooks import register_from_config
+        from hermes_cli.config import load_config
+        _cfg = load_config()
+        _specs = []
+        try:
+            from agent.shell_hooks import iter_configured_hooks
+            _specs = iter_configured_hooks(_cfg)
+        except Exception as _e:
+            print(f"DEBUG: iter_configured_hooks failed: {_e}")
+        print(f"DEBUG: parsed hook specs={len(_specs)} for gateway run")
+        register_from_config(_cfg, accept_hooks=True)
+        print("DEBUG: register_from_config completed")
+    except Exception as _exc:
+        import traceback as _tb
+        print(f"DEBUG shell-hook registration FAILED: {_exc}")
+        _tb.print_exc()
+
     # Detached Windows gateway runs must ignore console-control broadcasts
     # from sibling CLI processes, but foreground `hermes gateway run` still
     # needs to obey the banner's "Press Ctrl+C to stop" contract.
