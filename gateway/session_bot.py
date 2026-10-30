@@ -218,8 +218,8 @@ def displaceable_bot_chat(authority, row):
     unbound CLI/TUI/Desktop row no native open can adopt), else None. Such a row can never be
     adopted (``validate_legacy_row``), renamed (the canonical title is its identity) or renamed
     over the API, so it would refuse every delivery for good. A bound local chat, old local history
-    a native open adopts (``_kept_local_history``) and a Desktop row a login stamped as its own are
-    never moved."""
+    a native open adopts (``_kept_local_history``) and a Desktop row a foreign login stamped with its
+    label are never moved."""
     from hermes_state_local import POLICY_PREFIX
     from hermes_state_local_migration import LEGACY_PREFIX
 
@@ -276,26 +276,27 @@ def release_superseded_bot_chat_at_boot(db, store):
 
 def _kept_local_history(db, row):
     """Whether an unbound row is local history the Bot Chat door must leave in place: a CLI, TUI
-    or Desktop row a native open adopts (unstamped, or stamped with the host owner's OS identity,
-    an owner login label, or a structured login subject),
-    or a Desktop row a served login stamped with its label (kept as on main, even with a route
-    column or another profile's name). Any other local-source row no open can ever adopt (a route
-    column left by a crash or reconnect, another profile's stamp, or outside Desktop a foreign
-    stamp) is not: it held the title and refused every delivery for good (#141243, #143715)."""
+    or Desktop row a native open adopts (``validate_legacy_row`` for the host owner: unstamped, or
+    stamped with one of the owner's identities, ``same_owner``), or a Desktop row a foreign login
+    stamped with its label (#140183: kept even with a route column or another profile's name). Any
+    other local-source row no open can ever adopt (a route column left by a crash or reconnect,
+    another profile's stamp, a foreign ``auth:v1`` subject, or outside Desktop a foreign label) is
+    not: it held the title and refused every delivery for good (#141243, #143715)."""
+    from gateway.owner_identity import host_owner_subject, same_owner
     from gateway.session_identity import parse_authenticated_subject
-    from gateway.owner_identity import same_owner
-    from gateway.session_worker_reservation import owner_worker_subject
     from hermes_state_local_migration import LEGACY_LOCAL_SOURCES, legacy_account_label, validate_legacy_row
     if row.get('source') not in LEGACY_LOCAL_SOURCES:
         return False
     user_id = row.get('user_id')
-    if (user_id and not legacy_account_label(row) and not same_owner(user_id, owner_worker_subject())
-            and parse_authenticated_subject(user_id) is None):
-        # Keep the Desktop foreign-login exception (#140183). Owner login labels must instead
-        # reach validation: delivery and native open must agree before this door displaces history.
-        return row.get('source') == 'desktop'
+    owner = host_owner_subject()
+    if user_id and not legacy_account_label(row) and not same_owner(user_id, owner):
+        # A stamp the host owner does not own. Only a Desktop row's login label keeps the #140183
+        # exception; nobody can adopt any other such row (#143715).
+        return row.get('source') == 'desktop' and parse_authenticated_subject(user_id) is None
     try:
-        validate_legacy_row(db, row, subject=user_id)
+        # The native open's own rule, with the owner as the adopting subject, so the door and the
+        # open agree on every row.
+        validate_legacy_row(db, row, subject=owner)
     except RuntimeStoreError:
         return False
     return True

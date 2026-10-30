@@ -9,20 +9,21 @@ from tests.waiting import async_wait_until
 headless = peer.headless
 
 
-@pytest.mark.parametrize("open_first", [False, True])
+@pytest.mark.parametrize("open_first", [False, True], ids=["delivery-first", "open-first"])
 @pytest.mark.parametrize(
     "stamp", ["basic:alice", "self-hosted:alice", 'auth:v1:["basic","","alice"]']
 )
+@pytest.mark.parametrize("source", ["tui", "cli"])
 @pytest.mark.asyncio
 async def test_owner_chat_retains_identity_history_and_replies_in_both_orders(
-    headless, monkeypatch, stamp, open_first
+    headless, monkeypatch, source, stamp, open_first
 ):
     import gateway.session_worker_reservation as reservation
 
     monkeypatch.setattr(reservation, "owner_worker_subject", lambda: "uid:1000")
     db = headless.authority.db
     sid = "existing-bot-chat"
-    db.create_session(sid, source="tui", user_id=stamp)
+    db.create_session(sid, source=source, user_id=stamp)
     db.set_session_title(sid, "Bot Chat")
     db.append_message(sid, "user", "existing project context")
     db.append_message(sid, "assistant", "existing answer")
