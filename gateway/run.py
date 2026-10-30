@@ -1409,6 +1409,33 @@ class MultiplexConfigError(RuntimeError):
     """
 
 
+_CRED_ATTRS = ("token", "api_key", "app_token", "bot_token")
+_CRED_EXTRA_KEYS = (
+    "token", "bot_token", "api_key", "app_token", "app_id", "project_id",
+    "webhook_url", "password", "secret", "username",
+)
+
+
+def _is_credentialless(platform_config) -> bool:
+    """True when a platform config carries no auth credential at all.
+
+    Only judges platforms whose credential lives on a well-known
+    ``PlatformConfig`` field or a well-known ``extra`` key. Anything else
+    returns False (conservative: let the adapter try to connect).
+    """
+    for attr in _CRED_ATTRS:
+        val = getattr(platform_config, attr, None)
+        if isinstance(val, str) and val.strip():
+            return False
+    extra = getattr(platform_config, "extra", None) or {}
+    if isinstance(extra, dict):
+        for key in _CRED_EXTRA_KEYS:
+            val = extra.get(key)
+            if isinstance(val, str) and val.strip():
+                return False
+    return True
+
+
 @_contextmanager
 def _profile_runtime_scope(profile_home: "Path"):
     """Scope config/skills/memory AND credentials to a profile for one turn.
@@ -8542,6 +8569,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         connected = 0
         for platform, platform_config in profile_cfg.platforms.items():
             if not platform_config.enabled:
+                continue
+            # Registry-driven enablement (gateway/config.py) probes
+            # is_connected() against UNSCOPED env, while the token itself is
+            # filled by _apply_env_overrides() through the SCOPED _getenv.
+            # For a secondary profile (platforms: {} in its config.yaml) the
+            # probe therefore says "token present" and flips enabled=True,
+            # but no token is resolvable in this profile's secret scope. The
+            # tokenless adapter then fails connect and its _mark_disconnected
+            # writes "disconnected" over the healthy primary adapter's state
+            # in the shared gateway_state.json — the dashboard reads that and
+            # reports Telegram as down while messages flow fine.
+            # A secondary profile routes inbound traffic through the primary
+            # adapter, so it has nothing to connect here.
+            if _is_credentialless(platform_config):
+                logger.debug(
+                    "skipping %s for profile '%s': no credential in this "
+                    "profile's secret scope (routed via the primary adapter)",
+                    platform.value, profile_name,
+                )
                 continue
             # A secondary profile must NOT enable a port-binding platform: the
             # default profile's listener already serves every profile via the
